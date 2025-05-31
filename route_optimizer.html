@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Route Optimizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+  />
+  <style>
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, sans-serif;
+    background: url('mmC6y3KdJfa2.UdgX606xw.jpg') no-repeat center center fixed;
+    background-size: cover;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }
+
+  .container {
+    background: rgba(255, 255, 255, 0.9);
+    padding: 30px;
+    border-radius: 12px;
+    max-width: 800px;
+    width: 100%;
+    box-shadow: 0 0 15px rgba(0,0,0,0.2);
+  }
+
+  h1 {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  #map {
+    height: 600px;
+    width: 100%;
+    margin-top: 20px;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  button {
+    margin-top: 10px;
+    padding: 8px 12px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+
+  label, input {
+    display: block;
+    margin-top: 10px;
+    width: 100%;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+  <h1>Get the Fastest Travel Route Between Several Stops</h1>
+  <form id="location-form">
+    <div id="locations-container">
+      <div class="input-row">
+        <input type="text" name="name" placeholder="Location Name" required />
+        <input type="text" name="address" placeholder="Location Address" required />
+      </div>
+    </div>
+    <button type="button" onclick="addLocationField()">Add Another Location</button><br><br>
+    <label for="start">Start Location:</label>
+    <input type="text" id="start" required />
+    <label for="end">End Location:</label>
+    <input type="text" id="end" required /><br><br>
+    <button type="submit">Optimize Route</button>
+  </form>
+  <div id="map"></div>
+  </div>
+
+  <script>
+    const tomtomKey = 'HMyF2IaEetiLS7KTQpDnC1IxT0cHMbqo';
+
+    function addLocationField() {
+      const container = document.getElementById("locations-container");
+      const newRow = document.createElement("div");
+      newRow.className = "input-row";
+      newRow.innerHTML = `
+        <input type="text" name="name" placeholder="Location Name" required />
+        <input type="text" name="address" placeholder="Location Address" required />
+      `;
+      container.appendChild(newRow);
+    }
+
+    document.getElementById("location-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+
+      const geocode = async (address) => {
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json`;
+        const response = await axios.get(url);
+        const { lat, lon } = response.data[0];
+        return [parseFloat(lat), parseFloat(lon)];
+      };
+
+      const locations = {};
+      const rows = document.querySelectorAll(".input-row");
+      for (const row of rows) {
+        const name = row.children[0].value;
+        const address = row.children[1].value;
+        locations[name] = address;
+      }
+
+      const coordinates = {};
+      for (const name in locations) {
+        coordinates[name] = await geocode(locations[name]);
+      }
+
+      const start = document.getElementById("start").value;
+      const end = document.getElementById("end").value;
+
+      if (!coordinates[start] || !coordinates[end]) {
+        alert("Start or end location not found among entered locations.");
+        return;
+      }
+
+      const names = Object.keys(coordinates);
+      const middle = names.filter(n => n !== start && n !== end);
+
+      function haversine(coord1, coord2) {
+        const toRad = deg => (deg * Math.PI) / 180;
+        const R = 6371e3;
+        const [lat1, lon1] = coord1.map(toRad);
+        const [lat2, lon2] = coord2.map(toRad);
+        const dlat = lat2 - lat1;
+        const dlon = lon2 - lon1;
+        const a = Math.sin(dlat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dlon/2)**2;
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
+      }
+
+      const permutations = arr => arr.length === 0 ? [[]] : arr.flatMap((val, i) =>
+        permutations([...arr.slice(0, i), ...arr.slice(i + 1)]).map(p => [val, ...p])
+      );
+
+      let bestPath = null;
+      let bestDist = Infinity;
+      for (const perm of permutations(middle)) {
+        const path = [start, ...perm, end];
+        let dist = 0;
+        for (let i = 0; i < path.length - 1; i++) {
+          dist += haversine(coordinates[path[i]], coordinates[path[i+1]]);
+        }
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestPath = path;
+        }
+      }
+
+      let totalTime = 0;
+      const routeCoords = [];
+      for (let i = 0; i < bestPath.length - 1; i++) {
+        const [lat1, lon1] = coordinates[bestPath[i]];
+        const [lat2, lon2] = coordinates[bestPath[i+1]];
+
+        const url = `https://api.tomtom.com/routing/1/calculateRoute/${lat1},${lon1}:${lat2},${lon2}/json?key=${tomtomKey}&travelMode=car`;
+        const res = await axios.get(url);
+        const leg = res.data.routes[0].legs[0];
+        totalTime += leg.summary.travelTimeInSeconds / 60;
+
+        for (const point of leg.points) {
+          routeCoords.push([point.latitude, point.longitude]);
+        }
+      }
+
+      const map = L.map("map").setView(coordinates[start], 12);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(map);
+
+      for (const name of bestPath) {
+        const [lat, lon] = coordinates[name];
+        L.marker([lat, lon]).addTo(map).bindPopup(name);
+      }
+
+      L.polyline(routeCoords, { color: 'red' }).addTo(map);
+      alert(`Total travel time: ${totalTime.toFixed(2)} minutes`);
+    });
+  </script>
+</body>
+</html>
